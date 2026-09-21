@@ -1,0 +1,162 @@
+---
+title: "exercise3"
+format: gfm
+editor: visual
+author: Shuyi Liu
+Date: 2026.9.22
+---
+
+## Hierarchical Models and Testing
+
+The aim of this analysis is to investigate whether the descriptive social norm intervention has an effect on the probability of hotel guests reusing their towels, while accounting for heterogeneity between studies.
+
+### Data preparation
+
+```{r}
+library(readr)
+library(tidyr)
+library(dplyr)
+towel_data <- read_delim(
+  "towelData.csv",
+  delim = ";",
+  locale = locale(encoding = "Latin1"),
+  show_col_types = FALSE
+) %>%
+  pivot_wider(
+    names_from = Towel.Reuse,
+    values_from = Count
+  ) %>%
+  mutate(
+    Total = Yes + No
+  )
+```
+
+Prepare variables for modelling. Use Control as the reference category.
+
+```{r}
+towel_data <- towel_data %>%
+  mutate(
+    Group = factor(
+      Group,
+      levels = c("Control", "Social Norm")
+    ),
+    Source = factor(Source),
+    Reuse_rate = Yes / Total
+  )
+# Check the structure of the prepared dataset
+glimpse(towel_data)
+towel_data %>%
+  select(
+    Source,
+    Group,
+    Yes,
+    No,
+    Total,
+    Reuse_rate
+  )
+```
+
+We can find the differences in baseline towel reuse rates between experiments from the graph. In addition, the difference between the Social Norm and Control conditions was not identical across studies. These patterns suggest that observations from different studies should not be treated as completely homogeneous and motivate the use of a hierarchical model.
+
+```{r}
+library(ggplot2)
+ggplot(
+  towel_data,
+  aes(
+    x = Group,
+    y = Reuse_rate,
+    group = Source
+  )
+) +
+  geom_point(size = 2) +
+  geom_line() +
+  facet_wrap(~ Source) +
+  labs(
+    x = "Experimental condition",
+    y = "Observed towel reuse proportion",
+    title = "Towel reuse across studies"
+  ) +
+  theme_minimal()
+```
+
+### Model choice
+
+The response was modelled using a binomial distribution because the data represent the number of towel reuses out of a known total number of guests. A logit link was used to relate the towel reuse probability to the intervention and study effects. The logit transformation ensures that fitted probabilities remain between 0 and 1.
+
+So finally we have the model:
+
+$$Y_{ij} \sim \text{Binomial}(n_{ij}, p_{ij})$$
+
+$$\text{logit}(p_{ij})=
+\beta_0
++
+u_{0j}
++
+\beta_1
+\text{Group}_{ij}$$
+
+$$u_{0j} \sim N(0,\sigma_0^2)$$
+
+```{r}
+library(brms)
+
+# Random intercept and random slope model.
+# baseline towel reuse are allowed to vary between studies.
+formula_m1 <- bf(
+  Yes | trials(Total) ~
+    Group +
+    (1 | Source)
+)
+# Inspect model parameters
+get_prior(
+  formula_m1,
+  data = towel_data,
+  family = binomial(link = "logit")
+)
+
+# Fit Model 1
+fit_m1 <- brm(
+  Yes | trials(Total) ~
+    Group + (1 | Source),
+  data = towel_data,
+  family = binomial(link = "logit"),
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 1000,
+  seed = 123,
+  control = list(adapt_delta = 0.95)
+)
+```
+
+Posterior parameter summary
+
+```{r}
+# Population-level effects:
+# overall intercept and intervention effect
+fixef(fit_m1, probs = c(0.05, 0.95))
+
+# Group-level standard deviations:
+# between-study heterogeneity
+VarCorr(fit_m1, probs = c(0.05, 0.95))
+```
+
+### Hypothesis testing
+
+The population-level coefficient for the Social Norm condition, $\beta_{\text1}$, represents the effect of the intervention relative to the Control condition on the log-odds of towel reuse. The hypotheses were formulated as
+
+$H_0: \beta_{\text1} ≤ 0$
+
+$H_1: \beta_{\text1} > 0$
+
+where $H_{\text1}$ represents an increase in towel reuse under the Social Norm intervention.
+
+```{r}
+test_m1 <-hypothesis(
+  fit_m1,
+  "GroupSocialNorm > 0"
+)
+test_m1$hypothesis
+```
+
+The Bayesian analysis provided strong support for a positive intervention effect. The estimated intervention coefficient was positive $\beta_1$=0.21, 90% CrI \[0.08, 0.34\], and the posterior probability that the intervention increased towel reuse was 99.7%.
